@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brick Wall Builder</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; }
+    canvas { display: block; cursor: none; }
+    #ui {
+      position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.6); color: #fff;
+      padding: 8px 24px; border-radius: 20px;
+      font: 600 16px sans-serif; pointer-events: none; white-space: nowrap;
+    }
+    #reset {
+      position: fixed; top: 14px; right: 16px;
+      background: #e53935; color: #fff; border: none;
+      padding: 9px 18px; border-radius: 8px;
+      font: 14px sans-serif; cursor: pointer; transition: background .15s;
+    }
+    #reset:hover { background: #b71c1c; }
+    #hint {
+      position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+      color: rgba(255,255,255,0.8); font: 15px sans-serif;
+      pointer-events: none; transition: opacity .5s;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">Bricks: <span id="count">0</span> &nbsp;|&nbsp; Next: <span id="next-label" style="font-size:1.2em;letter-spacing:1px;">?</span></div>
+  <button id="reset">Clear Wall</button>
+  <div id="hint">Move the helicopter with your mouse — click to drop a brick!</div>
+  <canvas id="c"></canvas>
+
+  <script>
+    const canvas  = document.getElementById('c');
+    const ctx     = canvas.getContext('2d');
+    const countEl = document.getElementById('count');
+    const hint    = document.getElementById('hint');
+
+    function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+    resize();
+    window.addEventListener('resize', resize);
+
+    const BW = 80, BH = 32, GRAVITY = 0.55;
+    const MORTAR = '#9e9e9e';
+    const COLORS = ['#b71c1c','#c62828','#d32f2f','#e53935','#bf360c','#dd2c00','#6d4c41'];
+    const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    function randomChar() { return CHARS[Math.floor(Math.random() * CHARS.length)]; }
+    let nextLabel = randomChar();
+    document.getElementById('next-label').textContent = nextLabel;
+
+    // Helicopter state
+    let mx       = canvas.width / 2;
+    let heliX    = canvas.width / 2;
+    let heliDir  = 1;   // 1 = faces left (default), -1 = faces right (mirrored)
+    let rotorA   = 0;   // main rotor angle
+    let bobT     = 0;   // hover bob timer
+    let dropBob  = 0;   // brief downward kick on brick release
+
+    const HELI_Y = 80;  // body centre, fixed height
+
+    let bricks = [];
+    let placed = 0;
+
+    const groundY = () => canvas.height - 60;
+
+    // ── Brick ──────────────────────────────────────────────────────────
+    class Brick {
+      constructor(cx, startY, label) {
+        this.x = Math.round(cx - BW / 2);
+        this.y = startY;
+        this.vy = 1;
+        this.settled = false;
+        this.color = COLORS[Math.floor(Math.random() * COLORS.length)];
+        this.label = label;
+      }
+      get bottom() { return this.y + BH; }
+      get right()  { return this.x + BW; }
+      overlapsH(o) { return this.x < o.right && this.right > o.x; }
+      update() {
+        if (this.settled) return;
+        this.vy += GRAVITY;
+        let surface = groundY();
+        for (const b of bricks) {
+          if (b === this || !b.settled) continue;
+          if (this.overlapsH(b) && b.y > this.bottom && b.y < surface) surface = b.y;
+        }
+        this.y += this.vy;
+        if (this.bottom >= surface) { this.y = surface - BH; this.vy = 0; this.settled = true; }
+      }
+      draw() {
+        ctx.fillStyle = MORTAR;
+        ctx.fillRect(this.x - 2, this.y - 2, BW + 4, BH + 4);
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, BW, BH);
+        ctx.fillStyle = 'rgba(255,255,255,0.14)';
+        ctx.fillRect(this.x, this.y, BW, 7);
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(this.x, this.bottom - 7, BW, 7);
+        ctx.fillStyle = 'rgba(255,255,255,0.88)';
+        ctx.font = 'bold 15px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(this.label, this.x + BW / 2, this.y + BH / 2);
+      }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────
+    function landingSurface(cx) {
+      const bx = Math.round(cx - BW / 2);
+      let s = groundY();
+      for (const b of bricks) {
+        if (!b.settled) continue;
+        if (bx < b.x + BW && bx + BW > b.x && b.y < s) s = b.y;
+      }
+      return s;
+    }
+
+    // ── Draw scene ─────────────────────────────────────────────────────
+    function drawScene() {
+      const w = canvas.width, h = canvas.height, gy = groundY();
+      const sky = ctx.createLinearGradient(0, 0, 0, h);
+      sky.addColorStop(0,    '#0d47a1');
+      sky.addColorStop(0.65, '#64b5f6');
+      sky.addColorStop(1,    '#b3e5fc');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#455a64';
+      ctx.fillRect(0, gy, w, h - gy);
+      ctx.fillStyle = '#607d8b';
+      ctx.fillRect(0, gy, w, 8);
+    }
+
+    // ── Drop guide ─────────────────────────────────────────────────────
+    function drawGuide(hx, hy) {
+      const surface = landingSurface(hx);
+      const lineStart = hy + 32; // just below helicopter skids
+
+      // Dashed rope/line
+      ctx.save();
+      ctx.setLineDash([5, 8]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(hx, lineStart);
+      ctx.lineTo(hx, surface);
+      ctx.stroke();
+      ctx.restore();
+
+      // Landing zone bar
+      ctx.strokeStyle = 'rgba(255,220,50,0.6)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(hx - BW / 2 - 6, surface);
+      ctx.lineTo(hx + BW / 2 + 6, surface);
+      ctx.stroke();
+
+      // Small arrowhead pointing down at landing zone
+      ctx.fillStyle = 'rgba(255,220,50,0.6)';
+      ctx.beginPath();
+      ctx.moveTo(hx, surface + 8);
+      ctx.lineTo(hx - 6, surface);
+      ctx.lineTo(hx + 6, surface);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // ── Next-brick preview (hanging below skids) ──────────────────────
+    function drawNextBrick(hx, hy) {
+      const bx = Math.round(hx - BW / 2);
+      const by = hy + 30;
+      ctx.globalAlpha = 0.42;
+      ctx.fillStyle = MORTAR;
+      ctx.fillRect(bx - 2, by - 2, BW + 4, BH + 4);
+      ctx.fillStyle = '#ef9a9a';
+      ctx.fillRect(bx, by, BW, BH);
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.font = 'bold 15px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(nextLabel, hx, by + BH / 2);
+      ctx.globalAlpha = 1;
+    }
+
+    // ── Helicopter ─────────────────────────────────────────────────────
+    function drawHelicopter(x, y) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(heliDir, 1); // mirror when flying right
+
+      // Tail fin
+      ctx.fillStyle = '#546e7a';
+      ctx.beginPath();
+      ctx.moveTo(34, -5);
+      ctx.lineTo(56, -22);
+      ctx.lineTo(62, -5);
+      ctx.closePath();
+      ctx.fill();
+
+      // Tail boom
+      ctx.fillStyle = '#546e7a';
+      ctx.beginPath();
+      ctx.moveTo(20, -8); ctx.lineTo(63, -4);
+      ctx.lineTo(63, 6);  ctx.lineTo(20, 9);
+      ctx.closePath();
+      ctx.fill();
+
+      // Tail rotor (fast spin)
+      ctx.save();
+      ctx.translate(62, 1);
+      ctx.rotate(rotorA * 3);
+      ctx.fillStyle = 'rgba(180,196,200,0.82)';
+      ctx.fillRect(-3, -22, 6, 44);
+      ctx.fillRect(-22, -3, 44, 6);
+      ctx.restore();
+
+      // Rotor mast
+      ctx.fillStyle = '#37474f';
+      ctx.fillRect(-3, -28, 5, 11);
+
+      // Main rotor (3 blades)
+      ctx.save();
+      ctx.translate(0, -28);
+      ctx.rotate(rotorA);
+      for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = 'rgba(180,196,200,0.9)';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 65, 5, (i * Math.PI * 2) / 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#263238';
+      ctx.beginPath();
+      ctx.arc(0, 0, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Main body
+      ctx.fillStyle = '#78909c';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 34, 20, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Red accent stripe
+      ctx.fillStyle = '#e53935';
+      ctx.fillRect(-8, -7, 30, 5);
+
+      // Cockpit bubble
+      ctx.fillStyle = '#e1f5fe';
+      ctx.beginPath();
+      ctx.ellipse(-18, 0, 17, 13, -0.15, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Window glare
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.beginPath();
+      ctx.ellipse(-23, -5, 8, 5, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Skids
+      ctx.strokeStyle = '#263238';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-18, 18); ctx.lineTo(-20, 28); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(12, 17);  ctx.lineTo(12, 27);  ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-28, 28); ctx.lineTo(22, 28);  ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // ── Main loop ──────────────────────────────────────────────────────
+    function loop() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawScene();
+
+      // Smooth helicopter follow
+      heliX += (mx - heliX) * 0.12;
+      bobT  += 0.025;
+      rotorA += 0.22;
+
+      // Facing direction (flip when target is clearly to the right)
+      if (mx - heliX >  5) heliDir = -1; // moving right → face right
+      else if (heliX - mx > 5) heliDir =  1; // moving left  → face left
+
+      // Drop recoil decays
+      dropBob *= 0.82;
+
+      const hy = HELI_Y + Math.sin(bobT) * 4 + dropBob;
+
+      for (const b of bricks) { b.update(); b.draw(); }
+      drawGuide(heliX, hy);
+      drawNextBrick(heliX, hy);
+      drawHelicopter(heliX, hy);
+
+      requestAnimationFrame(loop);
+    }
+
+    // ── Events ─────────────────────────────────────────────────────────
+    canvas.addEventListener('mousemove', e => { mx = e.clientX; });
+
+    canvas.addEventListener('click', () => {
+      const bob = Math.sin(bobT) * 4 + dropBob;
+      const spawnY = HELI_Y + bob + 30; // just below the skids
+      bricks.push(new Brick(heliX, spawnY, nextLabel));
+      placed++;
+      countEl.textContent = placed;
+      nextLabel = randomChar();
+      document.getElementById('next-label').textContent = nextLabel;
+      dropBob = 8;
+      if (placed === 1) hint.style.opacity = '0';
+    });
+
+    document.getElementById('reset').addEventListener('click', () => {
+      bricks = [];
+      placed = 0;
+      countEl.textContent = 0;
+      hint.style.opacity = '1';
+    });
+
+    loop();
+  </script>
+</body>
+</html>
