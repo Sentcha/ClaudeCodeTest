@@ -7,7 +7,7 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { overflow: hidden; }
-    canvas { display: block; cursor: none; }
+    canvas { display: block; cursor: none; touch-action: none; }
     #ui {
       position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
       background: rgba(0,0,0,0.6); color: #fff;
@@ -32,6 +32,11 @@
   <div id="ui">Bricks: <span id="count">0</span> &nbsp;|&nbsp; Next: <span id="next-label" style="font-size:1.2em;letter-spacing:1px;">?</span></div>
   <button id="reset">Clear Wall</button>
   <div id="hint">Move the helicopter with your mouse — click to drop a brick!</div>
+  <script>
+    if ('ontouchstart' in window) {
+      document.getElementById('hint').textContent = 'Drag to move the helicopter — tap to drop a brick!';
+    }
+  </script>
   <canvas id="c"></canvas>
 
   <script>
@@ -299,11 +304,9 @@
     }
 
     // ── Events ─────────────────────────────────────────────────────────
-    canvas.addEventListener('mousemove', e => { mx = e.clientX; });
-
-    canvas.addEventListener('click', () => {
+    function dropBrick() {
       const bob = Math.sin(bobT) * 4 + dropBob;
-      const spawnY = HELI_Y + bob + 30; // just below the skids
+      const spawnY = HELI_Y + bob + 30;
       bricks.push(new Brick(heliX, spawnY, nextLabel));
       placed++;
       countEl.textContent = placed;
@@ -311,7 +314,35 @@
       document.getElementById('next-label').textContent = nextLabel;
       dropBob = 8;
       if (placed === 1) hint.style.opacity = '0';
-    });
+    }
+
+    canvas.addEventListener('mousemove', e => { mx = e.clientX; });
+    canvas.addEventListener('click', dropBrick);
+
+    let touchStartX = 0;
+    let touchStartTime = 0;
+    let touchMoved = false;
+
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      mx = touch.clientX;
+      touchStartX = touch.clientX;
+      touchStartTime = Date.now();
+      touchMoved = false;
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      mx = touch.clientX;
+      if (Math.abs(touch.clientX - touchStartX) > 12) touchMoved = true;
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', e => {
+      e.preventDefault();
+      if (!touchMoved && Date.now() - touchStartTime < 300) dropBrick();
+    }, { passive: false });
 
     document.getElementById('reset').addEventListener('click', () => {
       bricks = [];
